@@ -8,8 +8,12 @@ use alloy_transport_ws::WsConnect;
 use anyhow::{self, Ok};
 use std::sync::Arc;
 use std::{collections::HashMap, ops::Add};
-use tokio::sync::mpsc;
-struct PoolState {}
+use tokio::sync::{RwLock, mpsc};
+#[derive(Debug, Clone)]
+struct PoolState {
+    a: f32,
+    b: f32,
+}
 enum PoolMessage {
     GetPoolState {
         pool: Address,
@@ -99,11 +103,35 @@ impl PoolActor {
         todo!();
     }
 
+    async fn stream_in_rpc(
+        pools: Arc<RwLock<HashMap<Address, PoolState>>>,
+        provider: Arc<dyn Provider>,
+    ) -> anyhow::Result<()> {
+        todo!();
+    }
+
     async fn run(&mut self) -> anyhow::Result<()> {
         println!("Start indexing pools");
         if let Err(e) = self.index_pools().await {
             eprintln!("Error encountered indexing pools: {:?}", e);
             return Err(e);
+        }
+
+        if let Err(e) = self.sync_pools().await {
+            eprintln!("Error encounter syncing pools: {:?}", e);
+            return Err(e);
+        }
+        let pools = Arc::new(RwLock::new(self.pools.clone()));
+        let pools_for_stream = Arc::clone(&pools);
+        let provider_for_stream = Arc::clone(&self.provider);
+        let task_handle = tokio::spawn(async move {
+            if let Err(e) = Self::stream_in_rpc(pools_for_stream, provider_for_stream).await {
+                eprintln!("Error: {:?}", e);
+            }
+        });
+
+        while let Some(msg) = self.receiver.recv().await {
+            self.on_message(msg).await?;
         }
         Ok(())
     }
