@@ -9,11 +9,18 @@ use anyhow::anyhow;
 use std::sync::Arc;
 use std::{collections::HashMap, ops::Add};
 use tokio::sync::{RwLock, mpsc, oneshot};
+
 #[derive(Debug, Clone)]
-struct PoolState {
-    a: f32,
-    b: f32,
+pub struct PoolState {
+    pub address: Address,
+    pub token_0: Address,
+    pub token_1: Address,
+    pub fee: u32,
+    pub sqrt_price_x96: U256,
+    pub tick: i32,
+    pub liquidity: u128,
 }
+
 pub enum PoolMessage {
     GetPoolState {
         pool: Address,
@@ -42,14 +49,14 @@ struct PoolActor {
 impl PoolActor {
     fn new(
         provider: Arc<dyn Provider>,
-        factory_address_url: String,
+        factory_address_str: String,
         receiver: mpsc::Receiver<PoolMessage>,
     ) -> Self {
         PoolActor {
             pools: HashMap::new(),
             provider,
             receiver,
-            factory_address: factory_address_url.parse::<Address>().unwrap(),
+            factory_address: factory_address_str.parse::<Address>().unwrap(),
         }
     }
 
@@ -145,11 +152,16 @@ struct PoolActorHandler {
 }
 
 impl PoolActorHandler {
-    fn new(sender: mpsc::Sender<PoolMessage>) -> Self {
-        Self { sender }
+    pub fn new(provider: Arc<dyn Provider>, factory_address_str: String) -> Self {
+        let (tx, rx) = mpsc::channel(32);
+        let mut actor = PoolActor::new(provider, factory_address_str, rx);
+        tokio::spawn(async move {
+            actor.run();
+        });
+        Self { sender: tx }
     }
 
-    async fn simulate_swap(
+    pub async fn simulate_swap(
         &self,
         amount_in: U256,
         token_in: Address,
@@ -169,7 +181,7 @@ impl PoolActorHandler {
         Ok(swap_amount)
     }
 
-    async fn get_pool_state(&self, pool: Address) -> anyhow::Result<PoolState> {
+    pub async fn get_pool_state(&self, pool: Address) -> anyhow::Result<PoolState> {
         let (tx, rx) = oneshot::channel();
         self.sender
             .send(PoolMessage::GetPoolState { pool, send_to: tx })
@@ -181,7 +193,7 @@ impl PoolActorHandler {
         Ok(pool_state)
     }
 
-    async fn find_pool(
+    pub async fn find_pool(
         &self,
         token_0: Address,
         token_1: Address,

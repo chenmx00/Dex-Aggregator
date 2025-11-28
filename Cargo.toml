@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-alloy = { version = "1.1.2", features = ["providers"] }
+alloy = { version = "1.1.2", features = ["full"] }
 alloy-transport-ws = "1.1.2"
 anyhow = "1.0.100"
 log = "0.4.28"
