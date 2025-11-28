@@ -5,30 +5,31 @@ use alloy::{
     rpc::client::{ClientBuilder, RpcClient},
 };
 use alloy_transport_ws::WsConnect;
-use anyhow::{self, Ok};
+use anyhow::anyhow;
 use std::sync::Arc;
 use std::{collections::HashMap, ops::Add};
-use tokio::sync::{RwLock, mpsc};
+use tokio::sync::{RwLock, mpsc, oneshot};
 #[derive(Debug, Clone)]
 struct PoolState {
     a: f32,
     b: f32,
 }
-enum PoolMessage {
+pub enum PoolMessage {
     GetPoolState {
         pool: Address,
-        send_to: mpsc::Sender<Option<PoolState>>,
+        send_to: oneshot::Sender<Option<PoolState>>,
     },
     SimulateSwap {
-        token_in: U256,
+        amount_in: U256,
+        token_in: Address,
         pool: Address,
-        send_to: mpsc::Sender<Option<U256>>,
+        send_to: oneshot::Sender<Option<U256>>,
     },
     FindPool {
         token_0: Address,
         token_1: Address,
         fee: U256,
-        send_to: mpsc::Sender<Option<Address>>,
+        send_to: oneshot::Sender<Option<Address>>,
     },
 }
 struct PoolActor {
@@ -70,18 +71,19 @@ impl PoolActor {
                 Ok(())
             }
             PoolMessage::SimulateSwap {
+                amount_in,
                 token_in,
                 pool,
                 send_to,
             } => {
-                let token_out = self.simulate_swap(token_in, &pool);
+                let token_out = self.simulate_swap(token_in, amount_in, &pool);
                 let _ = send_to.send(token_out);
                 Ok(())
             }
         }
     }
 
-    fn simulate_swap(&self, token_in: U256, pool: &Address) -> Option<U256> {
+    fn simulate_swap(&self, token_in: Address, amount_in: U256, pool: &Address) -> Option<U256> {
         println!("{:?}", pool);
         todo!();
     }
@@ -103,7 +105,7 @@ impl PoolActor {
         todo!();
     }
 
-    async fn stream_in_rpc(
+    async fn stream_events(
         pools: Arc<RwLock<HashMap<Address, PoolState>>>,
         provider: Arc<dyn Provider>,
     ) -> anyhow::Result<()> {
@@ -124,8 +126,8 @@ impl PoolActor {
         let pools = Arc::new(RwLock::new(self.pools.clone()));
         let pools_for_stream = Arc::clone(&pools);
         let provider_for_stream = Arc::clone(&self.provider);
-        let task_handle = tokio::spawn(async move {
-            if let Err(e) = Self::stream_in_rpc(pools_for_stream, provider_for_stream).await {
+        let _task_handle = tokio::spawn(async move {
+            if let Err(e) = Self::stream_events(pools_for_stream, provider_for_stream).await {
                 eprintln!("Error: {:?}", e);
             }
         });
@@ -137,6 +139,67 @@ impl PoolActor {
     }
 }
 
-struct PoolActorHandler {}
+#[derive(Debug, Clone)]
+struct PoolActorHandler {
+    sender: mpsc::Sender<PoolMessage>,
+}
 
-impl PoolActorHandler {}
+impl PoolActorHandler {
+    fn new(sender: mpsc::Sender<PoolMessage>) -> Self {
+        Self { sender }
+    }
+
+    async fn simulate_swap(
+        &self,
+        amount_in: U256,
+        token_in: Address,
+        pool: Address,
+    ) -> anyhow::Result<U256> {
+        let (tx, rx) = oneshot::channel();
+        self.sender
+            .send(PoolMessage::SimulateSwap {
+                amount_in,
+                token_in,
+                pool,
+                send_to: tx,
+            })
+            .await?;
+        let result = rx.await.map_err(|e| anyhow!("swap error: {:?}", e))?;
+        let swap_amount = result.ok_or_else(|| anyhow!("swap amount is none"))?;
+        Ok(swap_amount)
+    }
+
+    async fn get_pool_state(&self, pool: Address) -> anyhow::Result<PoolState> {
+        let (tx, rx) = oneshot::channel();
+        self.sender
+            .send(PoolMessage::GetPoolState { pool, send_to: tx })
+            .await?;
+        let result = rx
+            .await
+            .map_err(|e| anyhow!("fetching pool state error: {:?}", e))?;
+        let pool_state = result.ok_or_else(|| anyhow!("state is empty"))?;
+        Ok(pool_state)
+    }
+
+    async fn find_pool(
+        &self,
+        token_0: Address,
+        token_1: Address,
+        fee: U256,
+    ) -> anyhow::Result<Address> {
+        let (tx, rx) = oneshot::channel();
+        self.sender
+            .send(PoolMessage::FindPool {
+                token_0,
+                token_1,
+                fee,
+                send_to: tx,
+            })
+            .await?;
+        let result = rx
+            .await
+            .map_err(|e| anyhow!("finding pool error: {:?}", e))?;
+        let pool = result.ok_or_else(|| anyhow!("result is empty"))?;
+        Ok(pool)
+    }
+}
