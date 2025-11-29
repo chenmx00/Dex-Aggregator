@@ -39,7 +39,7 @@ pub enum PoolMessage {
         send_to: oneshot::Sender<Option<Address>>,
     },
 }
-struct PoolActor {
+pub struct PoolActor {
     pools: HashMap<Address, PoolState>,
     provider: Arc<dyn Provider>,
     receiver: mpsc::Receiver<PoolMessage>,
@@ -147,7 +147,7 @@ impl PoolActor {
 }
 
 #[derive(Debug, Clone)]
-struct PoolActorHandler {
+pub struct PoolActorHandler {
     sender: mpsc::Sender<PoolMessage>,
 }
 
