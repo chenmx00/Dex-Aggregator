@@ -10,6 +10,7 @@ dependencies = [
  "alloy-transport-ws",
  "anyhow",
  "clap",
+ "futures",
  "log",
  "serde",
  "tokio",

@@ -20,7 +20,7 @@ async fn main() -> anyhow::Result<()> {
     let token_1 = String::from("0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48")
         .parse::<Address>()
         .unwrap();
-    let fee = U256::from(50u64);
+    let fee = 50u32;
     if let Ok(pool) = actor_handle.find_pool(token_0, token_1, fee).await {
         println!("Pool address is {:?}", pool);
     }

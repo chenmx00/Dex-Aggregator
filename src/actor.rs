@@ -1,11 +1,13 @@
 use alloy::{
     consensus::transaction::PooledTransaction,
-    primitives::{Address, U256},
+    primitives::{Address, U256, keccak256},
     providers::{Provider, ProviderBuilder},
     rpc::client::{ClientBuilder, RpcClient},
+    rpc::types::{Filter, Log},
 };
 use alloy_transport_ws::WsConnect;
 use anyhow::anyhow;
+use futures::StreamExt;
 use std::sync::Arc;
 use std::{collections::HashMap, ops::Add};
 use tokio::sync::{RwLock, mpsc, oneshot};
@@ -19,6 +21,24 @@ pub struct PoolState {
     pub sqrt_price_x96: U256,
     pub tick: i32,
     pub liquidity: u128,
+}
+
+enum PoolUpdate {
+    Swap {
+        sqrt_price: U256,
+        tick: i32,
+        liquidity: u128,
+    },
+    Mint {
+        tick_lower: i32,
+        tick_upper: i32,
+        amount: u128,
+    },
+    Burn {
+        tick_lower: i32,
+        tick_upper: i32,
+        amount: u128,
+    },
 }
 
 pub enum PoolMessage {
@@ -35,7 +55,7 @@ pub enum PoolMessage {
     FindPool {
         token_0: Address,
         token_1: Address,
-        fee: U256,
+        fee: u32,
         send_to: oneshot::Sender<Option<Address>>,
     },
 }
@@ -100,8 +120,11 @@ impl PoolActor {
         todo!();
     }
 
-    fn find_pool(&self, token_0: &Address, token_1: &Address, fee: U256) -> Option<Address> {
-        todo!();
+    fn find_pool(&self, token_0: &Address, token_1: &Address, fee: u32) -> Option<Address> {
+        self.pools
+            .values()
+            .find(|x| x.token_0 == *token_0 && x.token_1 == *token_1 && fee == x.fee)
+            .map(|x| x.address)
     }
 
     async fn index_pools(&mut self) -> anyhow::Result<()> {
@@ -116,7 +139,33 @@ impl PoolActor {
         pools: Arc<RwLock<HashMap<Address, PoolState>>>,
         provider: Arc<dyn Provider>,
     ) -> anyhow::Result<()> {
-        todo!();
+        let sub = provider.subscribe_blocks().await?;
+        let mut stream = sub.into_stream();
+        let mut last_processed = provider.get_block_number().await?;
+        let swap_sig = keccak256("Swap(address,address,int256,int256,uint160,uint128,int24)");
+        let mint_sig = keccak256("Mint(address,address,int24,int24,uint128,uint256,uint256)");
+        let burn_sig = keccak256("Burn(address,int24,int24,uint128,uint256,uint256)");
+
+        while let Some(block) = stream.next().await {
+            let current = block.number;
+            let pool_addresses: Vec<Address> = pools.read().await.keys().copied().collect();
+            if current <= last_processed {
+                continue;
+            }
+            let filter = Filter::new()
+                .address(pool_addresses)
+                .from_block(last_processed + 1)
+                .to_block(current);
+            let mut updates: HashMap<Address, Vec<PoolUpdate>> = HashMap::new();
+            let logs: Vec<Log> = provider.get_logs(&filter).await?;
+            for log in logs {
+                if log.topics().is_empty() {
+                    continue;
+                }
+                let pool_addr = log.address();
+            }
+        }
+        Ok(())
     }
 
     async fn run(&mut self) -> anyhow::Result<()> {
@@ -143,6 +192,23 @@ impl PoolActor {
             self.on_message(msg).await?;
         }
         Ok(())
+    }
+}
+
+#[cfg(tests)]
+mod tests {
+    use crate::actor;
+
+    use super::*;
+
+    #[test]
+    fn test_find_pool() {
+        let (tx, rx) = mpsc::channel::new();
+        let ws_connect = WsConnect::new("wss://eth-mainnet.g.alchemy.com/v2/YOUR_API_KEY");
+        let provider = ProviderBuilder::new().connect_ws(ws_connect).await?;
+        let factory_address_str = String::from("0x1F98431c8aD98523631AE4a59f267346ea31F984");
+        let actor = PoolActor::new(provider, factory_address_str, rx);
+        actor.find_pool();
     }
 }
 
