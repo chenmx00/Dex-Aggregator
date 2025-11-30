@@ -39,6 +39,7 @@ pub struct PoolState {
     pub liquidity: u128,
 }
 
+#[derive(Debug, Clone)]
 enum PoolUpdate {
     Swap {
         sqrt_price: U256,
@@ -185,9 +186,67 @@ impl PoolActor {
                     Some(sig) if *sig == burn_sig => PoolActor::decode_burn_with_sol(&log),
                     _ => Err(anyhow!("unknown update")),
                 };
+                if let Ok(update) = update {
+                    updates
+                        .entry(pool_addr)
+                        .or_insert_with(|| Vec::new())
+                        .push(update);
+                }
+                let mut pools_write = pools.write().await;
+                for (addr, pool_updates) in updates.clone() {
+                    if let Some(pool_state) = pools_write.get_mut(&addr) {
+                        for pool_update in pool_updates {
+                            match pool_update {
+                                PoolUpdate::Swap {
+                                    sqrt_price,
+                                    tick,
+                                    liquidity,
+                                } => {
+                                    Self::apply_swap_update(pool_state, sqrt_price, tick, liquidity)
+                                }
+                                PoolUpdate::Mint {
+                                    tick_lower,
+                                    tick_upper,
+                                    amount,
+                                } => Self::apply_mint_update(
+                                    pool_state, tick_lower, tick_upper, amount,
+                                ),
+                                PoolUpdate::Burn {
+                                    tick_lower,
+                                    tick_upper,
+                                    amount,
+                                } => Self::apply_burn_update(
+                                    pool_state, tick_lower, tick_upper, amount,
+                                ),
+                            }
+                        }
+                    }
+                }
             }
         }
         Ok(())
+    }
+
+    fn apply_swap_update(pool_state: &mut PoolState, sqrt_price: U256, tick: i32, liquidity: u128) {
+        todo!();
+    }
+
+    fn apply_mint_update(
+        pool_state: &mut PoolState,
+        tick_lower: i32,
+        tick_upper: i32,
+        amount: u128,
+    ) {
+        todo!();
+    }
+
+    fn apply_burn_update(
+        pool_state: &mut PoolState,
+        tick_lower: i32,
+        tick_upper: i32,
+        amount: u128,
+    ) {
+        todo!();
     }
 
     //refactor. can put the below three functions into one
