@@ -163,6 +163,10 @@ impl PoolActor {
                     continue;
                 }
                 let pool_addr = log.address();
+                let update = match log.topic0() {
+                    topics.
+
+                }
             }
         }
         Ok(())
