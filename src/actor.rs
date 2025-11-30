@@ -2,8 +2,12 @@ use alloy::{
     consensus::transaction::PooledTransaction,
     primitives::{Address, U256, keccak256},
     providers::{Provider, ProviderBuilder},
-    rpc::client::{ClientBuilder, RpcClient},
-    rpc::types::{Filter, Log},
+    rpc::{
+        client::{ClientBuilder, RpcClient},
+        types::{Filter, Log},
+    },
+    sol,
+    sol_types::SolEvent,
 };
 use alloy_transport_ws::WsConnect;
 use anyhow::anyhow;
@@ -11,6 +15,18 @@ use futures::StreamExt;
 use std::sync::Arc;
 use std::{collections::HashMap, ops::Add};
 use tokio::sync::{RwLock, mpsc, oneshot};
+
+sol! {
+    event Swap(
+        address indexed sender,
+        address indexed recipient,
+        int256 amount0,
+        int256 amount1,
+        uint256 sqrtPriceX96,
+        uint128 liquidity,
+        int32 tick
+    );
+}
 
 #[derive(Debug, Clone)]
 pub struct PoolState {
@@ -164,12 +180,35 @@ impl PoolActor {
                 }
                 let pool_addr = log.address();
                 let update = match log.topic0() {
-                    topics.
-
-                }
+                    Some(sig) if *sig == swap_sig => PoolActor::decode_swap_with_sol(&log),
+                    Some(sig) if *sig == mint_sig => PoolActor::
+                    _ => Err(anyhow!("unknown update")),
+                };
             }
         }
         Ok(())
+    }
+    
+    //refactor. can put the below three functions into one
+    fn decode_swap_with_sol(log: &Log) -> anyhow::Result<PoolUpdate> {
+        let data = log.data();
+        match Swap::decode_log_data(data) {
+            Ok(res) => {
+                let sqrt_price = res.sqrtPriceX96;
+                let tick = res.tick;
+                let liquidity = res.liquidity;
+                Ok(PoolUpdate::Swap {
+                    sqrt_price,
+                    tick,
+                    liquidity,
+                })
+            }
+            Err(e) => Err(anyhow!("Can't decode the swap event: {:?}", e)),
+        }
+    }
+    
+    fn decode_mint_with_sol(log: &Log) -> anyhow::Result<PoolUpdate>{
+        
     }
 
     async fn run(&mut self) -> anyhow::Result<()> {
