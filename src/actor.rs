@@ -1,6 +1,6 @@
 use alloy::{
     consensus::transaction::PooledTransaction,
-    primitives::{Address, U256, keccak256},
+    primitives::{Address, I256, U256, keccak256},
     providers::{Provider, ProviderBuilder},
     rpc::{
         client::{ClientBuilder, RpcClient},
@@ -12,8 +12,8 @@ use alloy::{
 use alloy_transport_ws::WsConnect;
 use anyhow::anyhow;
 use futures::StreamExt;
-use std::sync::Arc;
 use std::{collections::HashMap, ops::Add};
+use std::{str::Bytes, sync::Arc};
 use tokio::sync::{RwLock, mpsc, oneshot};
 
 sol! {
@@ -22,9 +22,9 @@ sol! {
         address indexed recipient,
         int256 amount0,
         int256 amount1,
-        uint256 sqrtPriceX96,
+        uint160 sqrtPriceX96,
         uint128 liquidity,
-        int32 tick
+        int24 tick
     );
 }
 
@@ -181,35 +181,121 @@ impl PoolActor {
                 let pool_addr = log.address();
                 let update = match log.topic0() {
                     Some(sig) if *sig == swap_sig => PoolActor::decode_swap_with_sol(&log),
-                    Some(sig) if *sig == mint_sig => PoolActor::
+                    Some(sig) if *sig == mint_sig => PoolActor::decode_mint_with_sol(&log),
+                    Some(sig) if *sig == burn_sig => PoolActor::decode_burn_with_sol(&log),
                     _ => Err(anyhow!("unknown update")),
                 };
             }
         }
         Ok(())
     }
-    
+
     //refactor. can put the below three functions into one
     fn decode_swap_with_sol(log: &Log) -> anyhow::Result<PoolUpdate> {
         let data = log.data();
-        match Swap::decode_log_data(data) {
-            Ok(res) => {
-                let sqrt_price = res.sqrtPriceX96;
-                let tick = res.tick;
-                let liquidity = res.liquidity;
-                Ok(PoolUpdate::Swap {
-                    sqrt_price,
-                    tick,
-                    liquidity,
-                })
-            }
-            Err(e) => Err(anyhow!("Can't decode the swap event: {:?}", e)),
+        let data_bytes: &[u8] = &data.data;
+        if data_bytes.len() < 160 {
+            return Err(anyhow!("Insufficient data length"));
         }
+        let amount0 = I256::from_be_bytes::<32>(data_bytes[0..32].try_into()?);
+        let amount1 = I256::from_be_bytes::<32>(data_bytes[32..64].try_into()?);
+        let sqrt_price_x96 = U256::from_be_bytes::<32>(data_bytes[64..96].try_into()?);
+        let liquidity = u128::from_be_bytes(data_bytes[112..128].try_into()?);
+        let tick = {
+            // Get the full 32 bytes
+            let tick_word = &data_bytes[128..160];
+            // Take last 4 bytes for i32 conversion
+            let mut tick_bytes = [0u8; 4];
+            tick_bytes[0] = if tick_word[29] & 0x80 != 0 {
+                0xFF
+            } else {
+                0x00
+            }; // Sign extension
+            tick_bytes[1..4].copy_from_slice(&tick_word[29..32]); // Last 3 bytes
+            i32::from_be_bytes(tick_bytes)
+        };
+        Ok(PoolUpdate::Swap {
+            sqrt_price: sqrt_price_x96,
+            tick,
+            liquidity,
+        })
     }
-    
-    fn decode_mint_with_sol(log: &Log) -> anyhow::Result<PoolUpdate>{
-        
+
+    fn decode_mint_with_sol(log: &Log) -> anyhow::Result<PoolUpdate> {
+        let data = log.data();
+        let data_bytes: &[u8] = &data.data;
+        if data_bytes.len() < 128 {
+            return Err(anyhow::anyhow!("Insufficient data length"));
+        }
+        let topics = log.topics();
+        let owner = Address::from_slice(&topics[1][12..]);
+        let tick_lower = {
+            let bytes: &[u8] = topics[2].as_ref();
+            // Check sign bit (int24 is 3 bytes, sign bit is at position 29)
+            let is_negative = bytes[29] & 0x80 != 0;
+            let mut tick_bytes = [0u8; 4];
+            if is_negative {
+                tick_bytes[0] = 0xFF; // Sign extend
+            }
+            tick_bytes[1..4].copy_from_slice(&bytes[29..32]);
+            i32::from_be_bytes(tick_bytes)
+        };
+        let tick_upper = {
+            let bytes: &[u8] = topics[3].as_ref();
+            let is_negative = bytes[29] & 0x80 != 0;
+            let mut tick_bytes = [0u8; 4];
+            if is_negative {
+                tick_bytes[0] = 0xFF;
+            }
+            tick_bytes[1..4].copy_from_slice(&bytes[29..32]);
+            i32::from_be_bytes(tick_bytes)
+        };
+        let sender = Address::from_slice(&data_bytes[12..32]); // last 20 bytes
+        let amount = u128::from_be_bytes(data_bytes[48..64].try_into()?); // last 16 bytes of second word
+        Ok(PoolUpdate::Mint {
+            tick_lower,
+            tick_upper,
+            amount,
+        })
     }
+
+    fn decode_burn_with_sol(log: &Log) -> anyhow::Result<PoolUpdate> {
+        let data = log.data();
+        let data_bytes: &[u8] = &data.data;
+        if data_bytes.len() < 128 {
+            return Err(anyhow::anyhow!("Insufficient data lenght"));
+        }
+        let topics = log.topics();
+        let owner = Address::from_slice(&topics[1][12..]);
+        let tick_lower = {
+            let bytes: &[u8] = topics[2].as_ref();
+            // Check sign bit (int24 is 3 bytes, sign bit is at position 29)
+            let is_negative = bytes[29] & 0x80 != 0;
+            let mut tick_bytes = [0u8; 4];
+            if is_negative {
+                tick_bytes[0] = 0xFF; // Sign extend
+            }
+            tick_bytes[1..4].copy_from_slice(&bytes[29..32]);
+            i32::from_be_bytes(tick_bytes)
+        };
+        let tick_upper = {
+            let bytes: &[u8] = topics[3].as_ref();
+            let is_negative = bytes[29] & 0x80 != 0;
+            let mut tick_bytes = [0u8; 4];
+            if is_negative {
+                tick_bytes[0] = 0xFF;
+            }
+            tick_bytes[1..4].copy_from_slice(&bytes[29..32]);
+            i32::from_be_bytes(tick_bytes)
+        };
+        let amount = u128::from_be_bytes(data_bytes[16..32].try_into()?); // last 16 bytes of second word
+        Ok(PoolUpdate::Burn {
+            tick_lower,
+            tick_upper,
+            amount,
+        })
+    }
+    // todo: unit tests here
 
     async fn run(&mut self) -> anyhow::Result<()> {
         println!("Start indexing pools");
@@ -306,7 +392,7 @@ impl PoolActorHandler {
         &self,
         token_0: Address,
         token_1: Address,
-        fee: U256,
+        fee: u32,
     ) -> anyhow::Result<Address> {
         let (tx, rx) = oneshot::channel();
         self.sender
