@@ -228,7 +228,9 @@ impl PoolActor {
     }
 
     fn apply_swap_update(pool_state: &mut PoolState, sqrt_price: U256, tick: i32, liquidity: u128) {
-        todo!();
+        pool_state.sqrt_price_x96 = sqrt_price;
+        pool_state.tick = tick;
+        pool_state.liquidity = liquidity;
     }
 
     fn apply_mint_update(
@@ -237,7 +239,9 @@ impl PoolActor {
         tick_upper: i32,
         amount: u128,
     ) {
-        todo!();
+        if pool_state.tick < tick_upper && pool_state.tick > tick_lower {
+            pool_state.liquidity += amount;
+        }
     }
 
     fn apply_burn_update(
@@ -246,7 +250,9 @@ impl PoolActor {
         tick_upper: i32,
         amount: u128,
     ) {
-        todo!();
+        if pool_state.tick < tick_upper && pool_state.tick > tick_lower {
+            pool_state.liquidity -= amount;
+        }
     }
 
     //refactor. can put the below three functions into one
